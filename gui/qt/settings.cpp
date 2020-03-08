@@ -470,10 +470,13 @@ void MainWindow::setKeypadHolding(bool enabled) {
 
 void MainWindow::setCalcSkinTopFromType() {
     const bool is83 = get_device_type() == TI83PCE;
-    const bool is83EP = is83 && asic.python;
-    ui->calcSkinTop->setStyleSheet(is83EP ? QStringLiteral(".QFrame { border-image: url(:/skin/resources/skin/ti83pce_ep.png) 0 0 0 0 stretch stretch; }")
-                                   : is83 ? QStringLiteral(".QFrame { border-image: url(:/skin/resources/skin/ti83pce.png) 0 0 0 0 stretch stretch; }")
-                                          : QStringLiteral(".QFrame { border-image: url(:/skin/resources/skin/ti84pce.png) 0 0 0 0 stretch stretch; }"));
+    QString fileName;
+    if (asic.python) {
+        fileName = is83 ? "ti83pce_ep.png" : "ti84pcet_pe.png";
+    } else {
+        fileName = is83 ? "ti83pce.png" : "ti84pce.png";
+    }
+    ui->calcSkinTop->setStyleSheet(".QFrame { border-image: url(:/skin/resources/skin/" + fileName + ") 0 0 0 0 stretch stretch; }");
 }
 
 void MainWindow::setImagePath() {
