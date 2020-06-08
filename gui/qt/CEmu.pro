@@ -185,9 +185,13 @@ if(macx) {
 
 SOURCES += \
     ../../tests/autotester/autotester.cpp \
+    ../../core/arm/arm.c \
     ../../core/arm/armcpu.c \
     ../../core/arm/armmem.c \
+    ../../core/arm/armstate.c \
+    ../../core/arm/sync.c \
     ../../core/asic.c \
+    ../../core/coproc.c \
     ../../core/cpu.c \
     ../../core/keypad.c \
     ../../core/lcd.c \
@@ -285,9 +289,13 @@ SOURCES +=  ../../tests/autotester/autotester_cli.cpp \
 
 HEADERS  += \
     ../../tests/autotester/autotester.h \
+    ../../core/arm/arm.h \
     ../../core/arm/armcpu.h \
     ../../core/arm/armmem.h \
+    ../../core/arm/armstate.h \
+    ../../core/arm/sync.h \
     ../../core/asic.h \
+    ../../core/coproc.h \
     ../../core/cpu.h \
     ../../core/atomics.h \
     ../../core/defines.h \
