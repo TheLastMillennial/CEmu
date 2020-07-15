@@ -53,7 +53,7 @@ public:
         RequestReceive,
         RequestCancelTransfer,
         RequestAutoTester,
-        RequestDebugger
+        RequestDebugger,
     };
 
     int type = ConsoleNorm;

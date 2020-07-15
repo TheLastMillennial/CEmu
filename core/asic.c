@@ -57,7 +57,7 @@ static void plug_devices(void) {
     port_map[0xB] = init_backlight();
     port_map[0xC] = init_cxxx();
     port_map[0xD] = init_spi();
-    port_map[0xE] = init_exxx();
+    port_map[0xE] = init_coproc();
     port_map[0xF] = init_fxxx();
 
     reset_proc_count = 0;
@@ -141,7 +141,6 @@ bool asic_restore(FILE *image) {
            && usb_restore(image)
            && cxxx_restore(image)
            && spi_restore(image)
-           && exxx_restore(image)
            && sched_restore(image)
            && fgetc(image) == EOF;
 }
@@ -164,6 +163,5 @@ bool asic_save(FILE *image) {
            && usb_save(image)
            && cxxx_save(image)
            && spi_save(image)
-           && exxx_save(image)
            && sched_save(image);
 }

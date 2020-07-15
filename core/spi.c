@@ -1,6 +1,8 @@
 #include "spi.h"
 #include "bus.h"
+#include "coproc.h"
 #include "cpu.h"
+#include "debug/debug.h"
 #include "emu.h"
 #include "schedule.h"
 
@@ -166,7 +168,6 @@ void spi_update_pixel_12bpp(uint8_t red, uint8_t green, uint8_t blue) {
 
 static void spi_sw_reset(void) {
     spi.cmd = 0;
-    spi.fifo = 1;
     spi.param = 0;
     spi.gamma = 1;
     spi.mode = SPI_MODE_SLEEP | SPI_MODE_OFF;
@@ -408,70 +409,113 @@ static void spi_write_param(uint8_t value) {
     spi.param++;
 }
 
-/* Read from the SPI range of ports */
-static uint8_t spi_read(const uint16_t pio, bool peek) {
-    uint8_t value = 0;
-    (void)peek;
-    if (pio < 0x18) {
-        value = spi.regs[pio];
-    } else if (pio == 0x18) {
-        switch (spi.regs[0x12]) {
-            case 0: // LCD?
-                break;
-            case 1: // ARM?
-                if (!asic.python) {
-                    break;
-                }
-                if (spi.dataLength) {
-                    value = *spi.data++;
-                    spi.dataLength--;
-                } else if (!memcmp(spi.cbw, "USBC", 4)) {
-                    memcpy(spi.csw, spi.cbw, 8);
-                    spi.csw[3] = 'S';
-                    memset(spi.csw + 8, 0, 5);
-                    spi.cswIndex = 0;
-                    switch (spi.cbw[15]) {
-                        case 0x12: { // INQUIRY
-                            static const uint8_t inquiry[] = { 0xA5, 0x00, 0x80, 0x03, 0x02, 0x1F, 0x00, 0x00, 0x00, 0x54, 0x49, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x50, 0x79, 0x74, 0x68, 0x6F, 0x6E, 0x20, 0x41, 0x64, 0x61, 0x70, 0x74, 0x65, 0x72, 0x20, 0x20, 0x33, 0x2E, 0x30, 0x30, 0x00, 0xA5, 0x55, 0x53, 0x42, 0x53, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-                            spi.data = inquiry;
-                            spi.dataLength = sizeof(inquiry);
-                            break;
-                        }
-                    }
-                }
-                spi.cbw[spi.cbwIndex = 0] = 0;
-                break;
+static void spi_flush(void) {
+    uint8_t ffmt = spi.cr[0] >> 12 & 7;
+    uint8_t sdl = (spi.cr[1] >> 16 & 31) + 1;
+    uint8_t pdl = spi.cr[1] >> 24;
+    bool en = spi.cr[2] & 1 << 0;
+    uint8_t dir = (spi.cr[2] >> 7 & 3);
+    uint8_t bits = 0;
+    uint32_t mask = ~(~1u << (sdl - 1));
+    uint32_t value = 0;
+    uint8_t consumed = 0;
+    if (!en || !dir || ffmt != 1 || (dir & 1 << 0 && spi.rfve == SPI_RXFIFO_DEPTH)) {
+        return;
+    }
+    if (dir & 1 << 1) {
+        for (uint8_t i = spi.tfve; i; i--) {
+            bits += pdl + sdl;
+            value <<= pdl + sdl;
+            value |= spi.txfifo[(spi.tfvi + i - 1) & (SPI_TXFIFO_DEPTH - 1)] & mask;
         }
     }
-    return value;
+    if (spi.arm) {
+        consumed = coproc_transfer(dir, &value, &bits);
+        if (dir & 1 << 0) {
+            while (bits >= pdl + sdl) {
+                if (spi.rfve != SPI_RXFIFO_DEPTH) {
+                    spi.rxfifo[(spi.rfvi + spi.rfve++) & (SPI_RXFIFO_DEPTH - 1)] = value & mask;
+                    value >>= pdl + sdl;
+                }
+                bits -= pdl + sdl;
+            }
+        }
+    } else if (bits >= 9) {
+        (value >> 8 & 1 ? spi_write_param : spi_write_cmd)(value);
+        consumed = 9;
+    }
+    consumed = (consumed + sdl - 1) / sdl;
+    spi.tfvi += consumed;
+    spi.tfve -= consumed;
+}
+
+/* Read from the SPI range of ports */
+static uint8_t spi_read(uint16_t addr, bool peek) {
+    uint32_t shift = (addr & 3) << 3, value = 0;
+    if (!peek) {
+        spi_flush();
+    }
+    switch (addr >> 2) {
+        case 0x00 >> 2: // CR0
+        case 0x04 >> 2: // CR1
+        case 0x08 >> 2: // CR2
+            value = spi.cr[addr >> 2];
+            break;
+        case 0x0C >> 2: // STATUS
+            value = spi.tfve << 12 | spi.rfve << 4 |
+                (spi.tfve != SPI_TXFIFO_DEPTH) << 1 | (spi.rfve == SPI_RXFIFO_DEPTH) << 0;
+            break;
+        case 0x14 >> 2: // SELECT?
+            value = spi.arm << 0;
+            break;
+        case 0x18 >> 2: // DATA
+            if (!peek && spi.rfve) {
+                value = spi.rxfifo[spi.rfvi++ & (SPI_RXFIFO_DEPTH - 1)];
+                spi.rfve--;
+            }
+            break;
+        case 0x60 >> 2: // REVISION
+            value = 0x01 << 16 | 0x21 << 8 | 0x00 << 0;
+            break;
+        case 0x1C >> 2:
+        case 0x64 >> 2: // FEATURE
+            value = SPI_FEATURES << 24 | (SPI_TXFIFO_DEPTH - 1) << 16 |
+                (SPI_RXFIFO_DEPTH - 1) << 8 | (SPI_WIDTH - 1) << 0;
+            break;
+    }
+    return value >> shift;
 }
 
 /* Write to the SPI range of ports */
-static void spi_write(const uint16_t pio, const uint8_t byte, bool poke) {
-    (void)poke;
-
-    if (pio < 0x18) {
-        spi.regs[pio] = byte;
-    } else if (pio == 0x18) {
-        switch (spi.regs[0x12]) {
-            case 0: // LCD?
-                spi.fifo = spi.fifo << 3 | (byte & 7);
-                if (spi.fifo & 0x200) {
-                    if (spi.fifo & 0x100) {
-                        spi_write_param(spi.fifo);
-                    } else {
-                        spi_write_cmd(spi.fifo);
-                    }
-                    spi.fifo = 1;
-                }
-                break;
-            case 1: // ARM?
-                if (!asic.python) {
-                    break;
-                }
-                spi.cbw[spi.cbwIndex++ & 0x1F] = byte;
-                break;
-        }
+static void spi_write(uint16_t addr, uint8_t byte, bool poke) {
+    uint32_t shift = (addr & 3) << 3, value = (uint32_t)byte << shift, mask = ~(0xFFu << shift);
+    switch (addr >> 2) {
+        case 0x08 >> 2: // CR2
+            if (((spi.cr[2] ^ value) & ~mask & 1 << 0) && spi.arm) {
+                coproc_select(value & 1 << 0);
+            }
+            if (value & 1 << 2) {
+                spi.rfve = 0;
+            }
+            if (value & 1 << 3) {
+                spi.tfve = 0;
+            }
+            value &= ~(1 << 6 | 1 << 3 | 1 << 2);
+            // fallthrough
+        case 0x00 >> 2: // CR0
+        case 0x04 >> 2: // CR1
+            spi.cr[addr >> 2] &= mask;
+            spi.cr[addr >> 2] |= value;
+            break;
+        case 0x10 >> 2: // SELECT?
+            spi.arm &= mask >> 16 & 1;
+            spi.arm |= value >> 16 & 1;
+            break;
+        case 0x18 >> 2: // DATA
+            if (!poke && spi.tfve != SPI_TXFIFO_DEPTH) {
+                spi.txfifo[(spi.tfvi + spi.tfve++) & (SPI_TXFIFO_DEPTH - 1)] = value;
+            }
+            break;
     }
 }
 
@@ -484,7 +528,6 @@ static const eZ80portrange_t pspi = {
 void spi_reset(void) {
     uint8_t i = 0, c;
     memset(&spi, 0, sizeof(spi));
-    spi.regs[0x0C] = 0xF2;
     spi_hw_reset();
     for (c = 0; c < 1 << 5; c++) {
         spi.lut[i++] = c << 3 | c >> 2;
